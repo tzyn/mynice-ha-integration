@@ -15,6 +15,7 @@ from .api import NhkClient, NiceApiError, NiceCloud, parse_door_statuses
 from .const import (
     KEEPALIVE_INTERVAL,
     RECONNECT_BACKOFF,
+    RECONNECT_BACKOFF_MAX,
     SIGNAL_AVAILABLE,
     SIGNAL_STATE,
 )
@@ -117,6 +118,14 @@ class NiceHub:
         Returns the number of accessories that connected. One accessory failing
         does not prevent the others.
         """
+        doors = await self.cloud.async_discover()
+        self._creds = {
+            door["mac"]: door["creds"]
+            for door in doors
+            if door.get("mac") in self._route and door.get("creds")
+        }
+        if not self._creds:
+            raise NiceApiError("no accessory credentials available")
         await self._client.open()
         # Pass 1: CONNECT every accessory (best-effort) before priming any
         # STATUS, so one accessory's status reply isn't swallowed while another
@@ -137,11 +146,13 @@ class NiceHub:
 
     async def _run(self) -> None:
         """Maintain the shared socket, reconnecting all sessions on failure."""
+        retry_delay = RECONNECT_BACKOFF
         while not self._stopping:
             try:
                 if await self._connect_all() == 0:
                     raise NiceApiError("no accessories connected")
                 last_ka = monotonic()
+                last_status = dict.fromkeys(self._client.sessions, last_ka)
                 while not self._stopping:
                     frame = await self._client.read_frame(timeout=5.0)
                     if frame:
@@ -151,7 +162,14 @@ class NiceHub:
                         if mac:
                             statuses = parse_door_statuses(frame)
                             if statuses:
+                                retry_delay = RECONNECT_BACKOFF
+                                last_status[mac] = monotonic()
                                 self._publish(mac, statuses)
+                    if any(
+                        monotonic() - received >= KEEPALIVE_INTERVAL * 3
+                        for received in last_status.values()
+                    ):
+                        raise NiceApiError("device status timed out")
                     if monotonic() - last_ka >= KEEPALIVE_INTERVAL:
                         for mac in list(self._client.sessions):
                             await self._client.send_status(mac)
@@ -161,8 +179,10 @@ class NiceHub:
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("Nice connection lost: %s", err)
             finally:
-                for mac in self._creds:
+                for mac in self._route:
                     self._set_available(mac, False)
                 await self._client.close()
             if not self._stopping:
-                await asyncio.sleep(RECONNECT_BACKOFF)
+                _LOGGER.debug("Nice: reconnecting in %s seconds", retry_delay)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, RECONNECT_BACKOFF_MAX)

@@ -49,4 +49,5 @@ SIGNAL_AVAILABLE = f"{DOMAIN}_avail_{{}}"
 # Timings.
 KEEPALIVE_INTERVAL = 25.0  # seconds; proxy drops idle sockets
 RECONNECT_BACKOFF = 5.0  # seconds between socket reconnect attempts
+RECONNECT_BACKOFF_MAX = 300.0
 DEVICE_CACHE_TTL = 6 * 3600  # device structure rarely changes

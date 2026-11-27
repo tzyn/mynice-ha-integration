@@ -213,8 +213,11 @@ class NiceCloud:
                     **kw,
                 ) as r:
                     if r.status == 401 and attempt == 1:
-                        self._token = None  # force re-auth then retry once
+                        if self._token:
+                            self._token["_expires_at"] = 0
                         continue
+                    if r.status == 401:
+                        raise NiceAuthError(f"{path} rejected renewed credentials")
                     if r.status != 200:
                         text = await r.text()
                         raise NiceApiError(f"{path} failed ({r.status}): {text[:200]}")
